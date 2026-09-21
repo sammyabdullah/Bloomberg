@@ -7,11 +7,21 @@ logger = logging.getLogger(__name__)
 
 VALID_FORMS = {"10-K", "10-Q"}
 
+STMT_INCOME = "Income Statement"
+STMT_BALANCE = "Balance Sheet"
+STMT_CASHFLOW = "Cash Flow"
+
 # Output column name -> candidate US-GAAP tags, in priority order.
 # Different filers use different tags for economically-equivalent concepts;
 # for each fiscal period we take the first candidate tag that has a value,
 # so a company doesn't get "missing" data just because it uses a synonym tag.
+#
+# Income-statement and cash-flow concepts are "duration" facts (they have a
+# start and end date). Balance-sheet concepts are "instant" facts (a snapshot
+# as of a single date, no start) -- see _extract_concept_periods for how the
+# two are reconciled onto the same row.
 CONCEPT_MAP = {
+    # ---- Income statement ----
     "Revenue": [
         "Revenues",
         "RevenueFromContractWithCustomerExcludingAssessedTax",
@@ -28,25 +38,209 @@ CONCEPT_MAP = {
         "CostOfGoodsAndServicesSold",
         "CostOfGoodsSold",
     ],
-    "OperatingExpenses": [
-        "OperatingExpenses",
-        "OperatingCostsAndExpenses",
-        "CostsAndExpenses",
+    "GrossProfit": [
+        "GrossProfit",
     ],
     "ResearchAndDevelopmentExpense": [
         "ResearchAndDevelopmentExpense",
         "ResearchAndDevelopmentExpenseExcludingAcquiredInProcessCost",
     ],
+    "SellingAndMarketingExpense": [
+        "SellingAndMarketingExpense",
+        "MarketingExpense",
+    ],
+    "GeneralAndAdministrativeExpense": [
+        "GeneralAndAdministrativeExpense",
+    ],
     "SellingGeneralAndAdministrativeExpense": [
         "SellingGeneralAndAdministrativeExpense",
         "SellingGeneralAndAdministrativeExpenses",
-        "GeneralAndAdministrativeExpense",
+    ],
+    "OperatingExpenses": [
+        "OperatingExpenses",
+        "OperatingCostsAndExpenses",
+        "CostsAndExpenses",
+    ],
+    "OperatingIncomeLoss": [
+        "OperatingIncomeLoss",
+    ],
+    "InterestExpense": [
+        "InterestExpense",
+        "InterestExpenseDebt",
+    ],
+    "InterestIncome": [
+        "InvestmentIncomeInterest",
+        "InterestIncomeOther",
+    ],
+    "OtherNonoperatingIncomeExpense": [
+        "OtherNonoperatingIncomeExpense",
+    ],
+    "IncomeLossBeforeIncomeTaxes": [
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+        "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments",
+    ],
+    "IncomeTaxExpenseBenefit": [
+        "IncomeTaxExpenseBenefit",
     ],
     "NetIncomeLoss": [
         "NetIncomeLoss",
         "ProfitLoss",
         "NetIncomeLossAvailableToCommonStockholdersBasic",
     ],
+    "EarningsPerShareBasic": [
+        "EarningsPerShareBasic",
+    ],
+    "EarningsPerShareDiluted": [
+        "EarningsPerShareDiluted",
+    ],
+    "WeightedAverageSharesBasic": [
+        "WeightedAverageNumberOfSharesOutstandingBasic",
+    ],
+    "WeightedAverageSharesDiluted": [
+        "WeightedAverageNumberOfDilutedSharesOutstanding",
+    ],
+    "ShareBasedCompensation": [
+        "ShareBasedCompensation",
+        "AllocatedShareBasedCompensationExpense",
+    ],
+    "DepreciationDepletionAndAmortization": [
+        "DepreciationDepletionAndAmortization",
+        "DepreciationAmortizationAndAccretionNet",
+        "DepreciationAndAmortization",
+    ],
+    # ---- Balance sheet (instant facts -- see note above) ----
+    "CashAndCashEquivalents": [
+        "CashAndCashEquivalentsAtCarryingValue",
+        "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+    ],
+    "ShortTermInvestments": [
+        "ShortTermInvestments",
+    ],
+    "AccountsReceivableNet": [
+        "AccountsReceivableNetCurrent",
+        "ReceivablesNetCurrent",
+    ],
+    "InventoryNet": [
+        "InventoryNet",
+    ],
+    "AssetsCurrent": [
+        "AssetsCurrent",
+    ],
+    "PropertyPlantAndEquipmentNet": [
+        "PropertyPlantAndEquipmentNet",
+    ],
+    "Goodwill": [
+        "Goodwill",
+    ],
+    "IntangibleAssetsNet": [
+        "FiniteLivedIntangibleAssetsNet",
+        "IntangibleAssetsNetExcludingGoodwill",
+    ],
+    "Assets": [
+        "Assets",
+    ],
+    "AccountsPayableCurrent": [
+        "AccountsPayableCurrent",
+        "AccountsPayableAndAccruedLiabilitiesCurrent",
+    ],
+    "DeferredRevenueCurrent": [
+        "ContractWithCustomerLiabilityCurrent",
+        "DeferredRevenueCurrent",
+    ],
+    "LiabilitiesCurrent": [
+        "LiabilitiesCurrent",
+    ],
+    "LongTermDebtNoncurrent": [
+        "LongTermDebtNoncurrent",
+        "LongTermDebt",
+    ],
+    "Liabilities": [
+        "Liabilities",
+    ],
+    "RetainedEarningsAccumulatedDeficit": [
+        "RetainedEarningsAccumulatedDeficit",
+    ],
+    "StockholdersEquity": [
+        "StockholdersEquity",
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    ],
+    "LiabilitiesAndStockholdersEquity": [
+        "LiabilitiesAndStockholdersEquity",
+    ],
+    # ---- Cash flow statement ----
+    "NetCashProvidedByUsedInOperatingActivities": [
+        "NetCashProvidedByUsedInOperatingActivities",
+        "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
+    ],
+    "NetCashProvidedByUsedInInvestingActivities": [
+        "NetCashProvidedByUsedInInvestingActivities",
+        "NetCashProvidedByUsedInInvestingActivitiesContinuingOperations",
+    ],
+    "NetCashProvidedByUsedInFinancingActivities": [
+        "NetCashProvidedByUsedInFinancingActivities",
+        "NetCashProvidedByUsedInFinancingActivitiesContinuingOperations",
+    ],
+    "PaymentsToAcquirePropertyPlantAndEquipment": [
+        "PaymentsToAcquirePropertyPlantAndEquipment",
+        "PaymentsForCapitalImprovements",
+    ],
+    "PaymentsForRepurchaseOfCommonStock": [
+        "PaymentsForRepurchaseOfCommonStock",
+    ],
+    "PaymentsOfDividends": [
+        "PaymentsOfDividends",
+        "PaymentsOfDividendsCommonStock",
+    ],
+}
+
+# Which financial statement each column belongs to, for grouping in Excel.
+# Must cover every key in CONCEPT_MAP.
+METRIC_STATEMENT = {
+    "Revenue": STMT_INCOME,
+    "CostOfRevenue": STMT_INCOME,
+    "CostOfGoodsAndServicesSold": STMT_INCOME,
+    "GrossProfit": STMT_INCOME,
+    "ResearchAndDevelopmentExpense": STMT_INCOME,
+    "SellingAndMarketingExpense": STMT_INCOME,
+    "GeneralAndAdministrativeExpense": STMT_INCOME,
+    "SellingGeneralAndAdministrativeExpense": STMT_INCOME,
+    "OperatingExpenses": STMT_INCOME,
+    "OperatingIncomeLoss": STMT_INCOME,
+    "InterestExpense": STMT_INCOME,
+    "InterestIncome": STMT_INCOME,
+    "OtherNonoperatingIncomeExpense": STMT_INCOME,
+    "IncomeLossBeforeIncomeTaxes": STMT_INCOME,
+    "IncomeTaxExpenseBenefit": STMT_INCOME,
+    "NetIncomeLoss": STMT_INCOME,
+    "EarningsPerShareBasic": STMT_INCOME,
+    "EarningsPerShareDiluted": STMT_INCOME,
+    "WeightedAverageSharesBasic": STMT_INCOME,
+    "WeightedAverageSharesDiluted": STMT_INCOME,
+    "ShareBasedCompensation": STMT_INCOME,
+    "DepreciationDepletionAndAmortization": STMT_INCOME,
+    "CashAndCashEquivalents": STMT_BALANCE,
+    "ShortTermInvestments": STMT_BALANCE,
+    "AccountsReceivableNet": STMT_BALANCE,
+    "InventoryNet": STMT_BALANCE,
+    "AssetsCurrent": STMT_BALANCE,
+    "PropertyPlantAndEquipmentNet": STMT_BALANCE,
+    "Goodwill": STMT_BALANCE,
+    "IntangibleAssetsNet": STMT_BALANCE,
+    "Assets": STMT_BALANCE,
+    "AccountsPayableCurrent": STMT_BALANCE,
+    "DeferredRevenueCurrent": STMT_BALANCE,
+    "LiabilitiesCurrent": STMT_BALANCE,
+    "LongTermDebtNoncurrent": STMT_BALANCE,
+    "Liabilities": STMT_BALANCE,
+    "RetainedEarningsAccumulatedDeficit": STMT_BALANCE,
+    "StockholdersEquity": STMT_BALANCE,
+    "LiabilitiesAndStockholdersEquity": STMT_BALANCE,
+    "NetCashProvidedByUsedInOperatingActivities": STMT_CASHFLOW,
+    "NetCashProvidedByUsedInInvestingActivities": STMT_CASHFLOW,
+    "NetCashProvidedByUsedInFinancingActivities": STMT_CASHFLOW,
+    "PaymentsToAcquirePropertyPlantAndEquipment": STMT_CASHFLOW,
+    "PaymentsForRepurchaseOfCommonStock": STMT_CASHFLOW,
+    "PaymentsOfDividends": STMT_CASHFLOW,
 }
 
 METRIC_COLUMNS = list(CONCEPT_MAP.keys())
@@ -77,7 +271,13 @@ def _period_label(rec: dict) -> str:
 
 
 def _extract_concept_periods(facts: dict, candidates: list) -> dict:
-    """Return {(start, end, fy, fp): raw_fact_record} for the first matching tag per period."""
+    """Return {(end, fy, fp): raw_fact_record} for the first matching tag per period.
+
+    Facts are keyed by (end, fy, fp) rather than including "start" so that
+    balance-sheet "instant" facts (no start date) line up on the same row as
+    income-statement/cash-flow "duration" facts (start+end) for the same
+    fiscal period -- both share the same end date, fy, and fp.
+    """
     us_gaap = (facts or {}).get("facts", {}).get("us-gaap", {})
     periods = {}
     for tag in candidates:
@@ -92,7 +292,7 @@ def _extract_concept_periods(facts: dict, candidates: list) -> dict:
                 end = e.get("end")
                 if not end:
                     continue
-                key = (e.get("start"), end, e.get("fy"), e.get("fp"))
+                key = (end, e.get("fy"), e.get("fp"))
                 existing = periods.get(key)
                 if existing is None:
                     periods[key] = {**e, "tag": tag, "unit": unit_name}
@@ -128,7 +328,7 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
 
     rows = []
     for key in all_keys:
-        start, end, fy, fp = key
+        end, fy, fp = key
         sample = None
         for periods in per_concept.values():
             if key in periods:
@@ -136,7 +336,7 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
                 break
 
         row = {
-            "start": start,
+            "start": sample.get("start") if sample else None,
             "end": end,
             "fy": fy,
             "fp": fp,

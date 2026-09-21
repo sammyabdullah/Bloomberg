@@ -1,9 +1,10 @@
 # SEC EDGAR Financials Puller (Phase 1: Structured Financials)
 
-Pulls standardized US-GAAP financials (Revenue, Cost of Revenue, COGS,
-OpEx, R&D, SG&A, Net Income) for a list of tickers from SEC EDGAR's free
-XBRL APIs (`data.sec.gov`) and writes them to an Excel workbook — one tab
-per ticker, plus a Summary tab with the latest period for every ticker.
+Pulls a standardized set of US-GAAP financials across the Income
+Statement, Balance Sheet, and Cash Flow statement for a list of tickers
+from SEC EDGAR's free XBRL APIs (`data.sec.gov`) and writes them to an
+Excel workbook — one tab per ticker, plus a Summary tab with the latest
+period for every ticker.
 
 No API key required. SEC does require a descriptive `User-Agent` header
 (your name + email) on every request, and asks that you keep request
@@ -58,26 +59,42 @@ Run `python pull_financials.py --help` for the full list.
 2. For each ticker, fetches
    `https://data.sec.gov/api/xbrl/companyfacts/CIK{10-digit-padded}.json`
    (cached to `cache/CIK##########.json` so re-runs don't re-hit SEC).
-3. Extracts these concepts, trying a short list of fallback US-GAAP tags
-   per concept (companies tag economically-equivalent line items
-   differently — e.g. `Revenues` vs.
+3. Extracts ~45 standard line items across three statements, trying a
+   short list of fallback US-GAAP tags per concept (companies tag
+   economically-equivalent line items differently — e.g. `Revenues` vs.
    `RevenueFromContractWithCustomerExcludingAssessedTax`). See
-   `CONCEPT_MAP` in `financials.py` if you want to add more fallback tags
-   for a ticker's specific taxonomy quirks:
-   - Revenue
-   - Cost of Revenue
-   - Cost of Goods & Services Sold
-   - Operating Expenses
-   - R&D Expense
-   - SG&A Expense
-   - Net Income (Loss)
+   `CONCEPT_MAP` in `financials.py` for the full list and to add more
+   fallback tags for a ticker's specific taxonomy quirks:
+
+   - **Income Statement**: Revenue, Cost of Revenue, Cost of Goods &
+     Services Sold, Gross Profit, R&D, Selling & Marketing, G&A, SG&A,
+     Operating Expenses, Operating Income, Interest Expense/Income, Other
+     Non-Operating Income, Pre-Tax Income, Income Tax, Net Income, Basic
+     & Diluted EPS, Weighted Avg Shares (Basic & Diluted), Stock-Based
+     Compensation, D&A.
+   - **Balance Sheet**: Cash & Equivalents, Short-Term Investments,
+     Accounts Receivable, Inventory, Total Current Assets, PP&E,
+     Goodwill, Intangible Assets, Total Assets, Accounts Payable,
+     Deferred Revenue, Total Current Liabilities, Long-Term Debt, Total
+     Liabilities, Retained Earnings, Stockholders' Equity, Total
+     Liabilities & Equity.
+   - **Cash Flow**: Cash Flow from Operations/Investing/Financing, CapEx,
+     Stock Buybacks, Dividends Paid.
+
+   Balance-sheet items are point-in-time ("instant") facts with no start
+   date, while income-statement and cash-flow items are period totals
+   ("duration" facts, with a start and end). The extractor reconciles the
+   two onto a single row per fiscal period by matching on period end
+   date + fiscal year + fiscal period, so a quarter's balance sheet lines
+   up with that same quarter's income statement and cash flow.
 4. Keeps only facts sourced from `10-K` and `10-Q` filings (ignores other
    form types, and amendments). When a fact for the same fiscal period was
    reported more than once (e.g. restated as a prior-period comparative in
    a later filing), the earliest-filed value is kept.
 5. Writes one Excel tab per ticker (rows = fiscal periods, sorted oldest
-   to newest) plus a `Summary` tab showing the most recent period for
-   every ticker side by side.
+   to newest, columns grouped and color-coded by statement) plus a
+   `Summary` tab showing the most recent period for every ticker side by
+   side.
 
 ## Error handling
 
@@ -88,6 +105,10 @@ noting why it has no data (e.g. "No CIK match", "No XBRL data available").
 
 ## Notes / limitations (Phase 1 scope)
 
+- Not every company tags every one of these ~45 concepts — a services
+  company may have no `InventoryNet`, a debt-free company no
+  `LongTermDebtNoncurrent`, etc. Those cells are simply left blank for
+  that ticker rather than treated as an error.
 - Quarter-only figures (e.g. a standalone Q4) aren't synthesized by
   subtracting 9-month YTD from full-year — the tool only reports what SEC
   provides directly (per the `fy`/`fp`/`start`/`end` fields).
