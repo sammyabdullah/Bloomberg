@@ -1,6 +1,7 @@
 """Extraction of standardized financial line items from SEC XBRL company facts."""
 
 import logging
+from datetime import date
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -270,6 +271,17 @@ def _period_label(rec: dict) -> str:
     return rec.get("end") or ""
 
 
+def _duration_days(rec: dict) -> Optional[int]:
+    """Days spanned by a duration fact's start/end. None for instant facts or bad dates."""
+    start, end = rec.get("start"), rec.get("end")
+    if not start or not end:
+        return None
+    try:
+        return (date.fromisoformat(end) - date.fromisoformat(start)).days
+    except ValueError:
+        return None
+
+
 def _extract_concept_periods(facts: dict, candidates: list) -> dict:
     """Return {(end, fy, fp): raw_fact_record} for the first matching tag per period.
 
@@ -277,6 +289,15 @@ def _extract_concept_periods(facts: dict, candidates: list) -> dict:
     balance-sheet "instant" facts (no start date) line up on the same row as
     income-statement/cash-flow "duration" facts (start+end) for the same
     fiscal period -- both share the same end date, fy, and fp.
+
+    A single tag can carry more than one duration fact for the same (end, fy,
+    fp): e.g. a Q2 filing commonly tags both the standalone 3-month figure
+    and the 6-month year-to-date cumulative figure under the same concept.
+    For quarterly periods (fp in Q1-Q4) we keep the shortest duration (the
+    standalone quarter, not the YTD cumulative); for FY periods we keep the
+    longest (the full year, not some shorter footnote breakout). Remaining
+    ties (equal duration -- e.g. a genuine restatement) fall back to keeping
+    the earliest-filed value.
     """
     us_gaap = (facts or {}).get("facts", {}).get("us-gaap", {})
     periods = {}
@@ -292,16 +313,29 @@ def _extract_concept_periods(facts: dict, candidates: list) -> dict:
                 end = e.get("end")
                 if not end:
                     continue
-                key = (end, e.get("fy"), e.get("fp"))
+                fy, fp = e.get("fy"), e.get("fp")
+                key = (end, fy, fp)
                 existing = periods.get(key)
                 if existing is None:
                     periods[key] = {**e, "tag": tag, "unit": unit_name}
-                elif existing.get("tag") == tag:
-                    # Same tag reported this period twice (e.g. restated as a
-                    # comparative in a later filing) -- keep the earliest filing.
-                    if (e.get("filed") or "") < (existing.get("filed") or ""):
-                        periods[key] = {**e, "tag": tag, "unit": unit_name}
-                # else: a higher-priority tag already filled this period; keep it.
+                    continue
+                if existing.get("tag") != tag:
+                    # A higher-priority tag already filled this period; keep it.
+                    continue
+
+                existing_days = _duration_days(existing)
+                new_days = _duration_days(e)
+                prefer_new = False
+                if new_days is not None and new_days != existing_days:
+                    if fp == "FY":
+                        prefer_new = existing_days is None or new_days > existing_days
+                    else:
+                        prefer_new = existing_days is None or new_days < existing_days
+                elif new_days == existing_days and (e.get("filed") or "") < (existing.get("filed") or ""):
+                    prefer_new = True
+
+                if prefer_new:
+                    periods[key] = {**e, "tag": tag, "unit": unit_name}
     return periods
 
 
