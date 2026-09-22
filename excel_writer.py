@@ -4,11 +4,19 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from financials import METRIC_COLUMNS, METRIC_STATEMENT, STMT_BALANCE, STMT_CASHFLOW, STMT_INCOME
+from financials import (
+    METRIC_COLUMNS,
+    METRIC_STATEMENT,
+    PERCENT_COLUMNS,
+    STMT_BALANCE,
+    STMT_CASHFLOW,
+    STMT_INCOME,
+)
 
 METRIC_HEADERS = {
     "Revenue": "Revenue",
     "RevenuePriorYear": "Revenue (Prior Year)",
+    "RevenueYoYGrowth": "Revenue YoY Growth %",
     "CostOfRevenue": "Cost of Revenue",
     "CostOfGoodsAndServicesSold": "Cost of Goods & Services Sold",
     "GrossProfit": "Gross Profit",
@@ -60,6 +68,7 @@ GROUP_FONT = Font(bold=True, color="FFFFFF")
 NUMBER_FORMAT = "#,##0"
 PER_SHARE_COLUMNS = {"EarningsPerShareBasic", "EarningsPerShareDiluted"}
 PER_SHARE_FORMAT = "#,##0.00"
+PERCENT_FORMAT = "0.0%"
 
 GROUP_FILLS = {
     STMT_INCOME: PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid"),
@@ -121,7 +130,11 @@ def _autosize(ws, total_cols, header_row):
 
 
 def _number_format_for(column_name):
-    return PER_SHARE_FORMAT if column_name in PER_SHARE_COLUMNS else NUMBER_FORMAT
+    if column_name in PERCENT_COLUMNS:
+        return PERCENT_FORMAT
+    if column_name in PER_SHARE_COLUMNS:
+        return PER_SHARE_FORMAT
+    return NUMBER_FORMAT
 
 
 def write_workbook(output_path, ticker_results: dict):

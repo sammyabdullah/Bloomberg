@@ -247,9 +247,14 @@ METRIC_STATEMENT = {
 # Derived columns computed after extraction (not pulled directly from a
 # single XBRL fact) -- inserted at a specific position among METRIC_COLUMNS.
 DERIVED_AFTER = {
-    "Revenue": ["RevenuePriorYear"],
+    "Revenue": ["RevenuePriorYear", "RevenueYoYGrowth"],
 }
 METRIC_STATEMENT["RevenuePriorYear"] = STMT_INCOME
+METRIC_STATEMENT["RevenueYoYGrowth"] = STMT_INCOME
+
+# Columns holding a ratio (e.g. 0.15 for 15%) rather than a dollar amount,
+# so excel_writer can format them as a percentage instead of "#,##0".
+PERCENT_COLUMNS = {"RevenueYoYGrowth"}
 
 METRIC_COLUMNS = []
 for _col in CONCEPT_MAP.keys():
@@ -406,7 +411,13 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
         prior_row = None
         if isinstance(fy, int) and fp is not None:
             prior_row = by_fiscal_period.get((fy - 1, fp))
-        row["RevenuePriorYear"] = prior_row.get("Revenue") if prior_row else None
+        prior_revenue = prior_row.get("Revenue") if prior_row else None
+        row["RevenuePriorYear"] = prior_revenue
+        revenue = row.get("Revenue")
+        if prior_revenue and revenue is not None:
+            row["RevenueYoYGrowth"] = (revenue - prior_revenue) / prior_revenue
+        else:
+            row["RevenueYoYGrowth"] = None
 
     if quarters is not None and quarters > 0:
         rows = rows[-quarters:]
