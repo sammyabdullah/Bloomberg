@@ -8,6 +8,7 @@ from financials import METRIC_COLUMNS, METRIC_STATEMENT, STMT_BALANCE, STMT_CASH
 
 METRIC_HEADERS = {
     "Revenue": "Revenue",
+    "RevenuePriorYear": "Revenue (Prior Year)",
     "CostOfRevenue": "Cost of Revenue",
     "CostOfGoodsAndServicesSold": "Cost of Goods & Services Sold",
     "GrossProfit": "Gross Profit",

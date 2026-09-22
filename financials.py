@@ -244,7 +244,17 @@ METRIC_STATEMENT = {
     "PaymentsOfDividends": STMT_CASHFLOW,
 }
 
-METRIC_COLUMNS = list(CONCEPT_MAP.keys())
+# Derived columns computed after extraction (not pulled directly from a
+# single XBRL fact) -- inserted at a specific position among METRIC_COLUMNS.
+DERIVED_AFTER = {
+    "Revenue": ["RevenuePriorYear"],
+}
+METRIC_STATEMENT["RevenuePriorYear"] = STMT_INCOME
+
+METRIC_COLUMNS = []
+for _col in CONCEPT_MAP.keys():
+    METRIC_COLUMNS.append(_col)
+    METRIC_COLUMNS.extend(DERIVED_AFTER.get(_col, []))
 
 
 def build_ticker_cik_map(tickers_json: dict) -> dict:
@@ -384,6 +394,19 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
         rows.append(row)
 
     rows.sort(key=lambda r: (r["end"] or "", r["start"] or ""))
+
+    # Look up "same fiscal period, one fiscal year earlier" using the full
+    # history (before --quarters truncation below), so a row near the edge
+    # of a truncated window can still find its prior-year comparison.
+    by_fiscal_period = {
+        (r["fy"], r["fp"]): r for r in rows if r["fy"] is not None and r["fp"] is not None
+    }
+    for row in rows:
+        fy, fp = row["fy"], row["fp"]
+        prior_row = None
+        if isinstance(fy, int) and fp is not None:
+            prior_row = by_fiscal_period.get((fy - 1, fp))
+        row["RevenuePriorYear"] = prior_row.get("Revenue") if prior_row else None
 
     if quarters is not None and quarters > 0:
         rows = rows[-quarters:]
