@@ -150,20 +150,19 @@ METRIC_COMPARISON_TABS = [
 ]
 
 
-def _period_offset_label(offset: int) -> str:
-    """T = most recent period, T-1 = one period before that, etc."""
-    return "T" if offset == 0 else f"T-{offset}"
-
-
 def _write_metric_comparison_tab(wb, ticker_results, sheet_name, value_column, value_label):
     """One row per ticker; columns are Revenue then value_column, each repeated
-    once per trailing period (oldest to newest, ending at the most recent "T").
+    once per trailing period (oldest to newest, ending at the most recent).
 
     Companies don't all share the same fiscal calendar or the same amount of
     history, so periods are aligned by recency (each company's own most
-    recent reported period lines up in the "T" column), not by calendar
-    quarter -- a "T-3" column can be a different calendar quarter for two
-    different tickers, especially for a recent IPO with a short history.
+    recent reported period lines up in the rightmost column), not strictly by
+    calendar quarter. Column headers show the actual period label (e.g. "Q2
+    FY2026") taken from whichever ticker has the longest history -- for a
+    company on a different fiscal calendar, or a recent IPO with less
+    history, its own period in that column may not exactly match the header
+    label even though the data is still correctly right-aligned to its own
+    most recent period.
     """
     ws = wb.create_sheet(sheet_name)
 
@@ -173,14 +172,19 @@ def _write_metric_comparison_tab(wb, ticker_results, sheet_name, value_column, v
         if result.get("status") == "ok" and result.get("rows")
     }
     max_periods = max((len(result["rows"]) for result in ok_results.values()), default=0)
+    reference_rows = next(
+        (result["rows"] for result in ok_results.values() if len(result["rows"]) == max_periods),
+        [],
+    )
+    period_labels = [row.get("label") or "" for row in reference_rows]
 
     revenue_start_col = 3
     value_start_col = revenue_start_col + max_periods
     headers = ["Ticker", "Company"]
-    for offset in range(max_periods - 1, -1, -1):
-        headers.append(f"Revenue ({_period_offset_label(offset)})")
-    for offset in range(max_periods - 1, -1, -1):
-        headers.append(f"{value_label} ({_period_offset_label(offset)})")
+    for label in period_labels:
+        headers.append(f"Revenue ({label})")
+    for label in period_labels:
+        headers.append(f"{value_label} ({label})")
 
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col, value=header)
