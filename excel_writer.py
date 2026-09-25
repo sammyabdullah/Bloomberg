@@ -137,6 +137,64 @@ def _number_format_for(column_name):
     return NUMBER_FORMAT
 
 
+# Cross-ticker comparison tabs: (sheet name, METRIC_COLUMNS key, column label, margin label).
+# Each tab lists every ticker's every fiscal period (one row per ticker-period)
+# side by side, alongside Revenue and that line item's share of Revenue.
+METRIC_COMPARISON_TABS = [
+    ("Gross Profit", "GrossProfit", "Gross Profit", "Gross Margin %"),
+    ("R&D", "ResearchAndDevelopmentExpense", "R&D Expense", "R&D % of Revenue"),
+    ("G&A", "GeneralAndAdministrativeExpense", "G&A Expense", "G&A % of Revenue"),
+    ("S&M", "SellingAndMarketingExpense", "S&M Expense", "S&M % of Revenue"),
+    ("Operating Income", "OperatingIncomeLoss", "Operating Income (Loss)", "Operating Margin %"),
+]
+
+
+def _write_metric_comparison_tab(wb, ticker_results, sheet_name, value_column, value_label, margin_label):
+    ws = wb.create_sheet(sheet_name)
+    headers = [
+        "Ticker",
+        "Company",
+        "Period",
+        "Form",
+        "Period End",
+        "Filed",
+        "Revenue",
+        value_label,
+        margin_label,
+    ]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = HEADER_FONT
+    ws.freeze_panes = "A2"
+
+    r = 2
+    for ticker, result in ticker_results.items():
+        if result.get("status") != "ok":
+            continue
+        company_name = result.get("company_name", "")
+        for row in result.get("rows", []):
+            revenue = row.get("Revenue")
+            value = row.get(value_column)
+            ws.cell(row=r, column=1, value=ticker)
+            ws.cell(row=r, column=2, value=company_name)
+            ws.cell(row=r, column=3, value=row.get("label"))
+            ws.cell(row=r, column=4, value=row.get("form"))
+            ws.cell(row=r, column=5, value=row.get("end"))
+            ws.cell(row=r, column=6, value=row.get("filed"))
+            rev_cell = ws.cell(row=r, column=7, value=revenue)
+            if revenue is not None:
+                rev_cell.number_format = NUMBER_FORMAT
+            val_cell = ws.cell(row=r, column=8, value=value)
+            if value is not None:
+                val_cell.number_format = NUMBER_FORMAT
+            if revenue and value is not None:
+                margin_cell = ws.cell(row=r, column=9, value=value / revenue)
+                margin_cell.number_format = PERCENT_FORMAT
+            r += 1
+
+    _autosize(ws, len(headers), header_row=1)
+
+
 def write_workbook(output_path, ticker_results: dict):
     """ticker_results: {ticker: {"status": "ok"|"error", "rows": [...], "company_name": str, "message": str}}"""
     wb = Workbook()
@@ -146,6 +204,11 @@ def write_workbook(output_path, ticker_results: dict):
     summary_first_metric_col = len(summary_meta) + 1
     summary_ws = wb.create_sheet("Summary")
     _write_headers(summary_ws, summary_meta, summary_first_metric_col)
+
+    for sheet_name, value_column, value_label, margin_label in METRIC_COMPARISON_TABS:
+        _write_metric_comparison_tab(
+            wb, ticker_results, sheet_name, value_column, value_label, margin_label
+        )
 
     summary_row_idx = 3
     for ticker, result in ticker_results.items():
