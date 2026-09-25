@@ -256,6 +256,14 @@ METRIC_STATEMENT["RevenueYoYGrowth"] = STMT_INCOME
 # so excel_writer can format them as a percentage instead of "#,##0".
 PERCENT_COLUMNS = {"RevenueYoYGrowth"}
 
+# Income-statement/cash-flow ("duration") concepts, as opposed to
+# balance-sheet ("instant") ones. Used to filter out rows that only have a
+# stray balance-sheet value attached (e.g. a snapshot re-reported as a
+# sequential-quarter comparative in a later filing) with no real
+# income-statement or cash-flow data -- not a useful reporting period on its
+# own, just an artifact of that snapshot's end date matching a real quarter.
+DURATION_CONCEPT_KEYS = [col for col in CONCEPT_MAP if METRIC_STATEMENT.get(col) != STMT_BALANCE]
+
 METRIC_COLUMNS = []
 for _col in CONCEPT_MAP.keys():
     METRIC_COLUMNS.append(_col)
@@ -422,8 +430,11 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
             row[column] = rec.get("val") if rec else None
         rows.append(row)
 
-    # Drop rows with no data at all in any tracked concept.
-    rows = [row for row in rows if any(row.get(col) is not None for col in CONCEPT_MAP)]
+    # Drop rows with no income-statement or cash-flow data at all -- a row
+    # holding only a stray balance-sheet value (see DURATION_CONCEPT_KEYS
+    # above) isn't a useful reporting period, just leftover from a snapshot
+    # incidentally re-reported for that same end date in a later filing.
+    rows = [row for row in rows if any(row.get(col) is not None for col in DURATION_CONCEPT_KEYS)]
 
     rows.sort(key=lambda r: (r["end"] or "", r["start"] or ""))
 
