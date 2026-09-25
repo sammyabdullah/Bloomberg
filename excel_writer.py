@@ -137,60 +137,70 @@ def _number_format_for(column_name):
     return NUMBER_FORMAT
 
 
-# Cross-ticker comparison tabs: (sheet name, METRIC_COLUMNS key, column label, margin label).
-# Each tab lists every ticker's every fiscal period (one row per ticker-period)
-# side by side, alongside Revenue and that line item's share of Revenue.
+# Cross-ticker comparison tabs: (sheet name, METRIC_COLUMNS key, column label).
+# Each tab lists every ticker exactly once (one row per ticker), with a block
+# of Revenue columns -- one per trailing period -- followed by a block of the
+# line item's columns, one per the same trailing periods.
 METRIC_COMPARISON_TABS = [
-    ("Gross Profit", "GrossProfit", "Gross Profit", "Gross Margin %"),
-    ("R&D", "ResearchAndDevelopmentExpense", "R&D Expense", "R&D % of Revenue"),
-    ("G&A", "GeneralAndAdministrativeExpense", "G&A Expense", "G&A % of Revenue"),
-    ("S&M", "SellingAndMarketingExpense", "S&M Expense", "S&M % of Revenue"),
-    ("Operating Income", "OperatingIncomeLoss", "Operating Income (Loss)", "Operating Margin %"),
+    ("Gross Profit", "GrossProfit", "Gross Profit"),
+    ("R&D", "ResearchAndDevelopmentExpense", "R&D Expense"),
+    ("G&A", "GeneralAndAdministrativeExpense", "G&A Expense"),
+    ("S&M", "SellingAndMarketingExpense", "S&M Expense"),
+    ("Operating Income", "OperatingIncomeLoss", "Operating Income (Loss)"),
 ]
 
 
-def _write_metric_comparison_tab(wb, ticker_results, sheet_name, value_column, value_label, margin_label):
+def _period_offset_label(offset: int) -> str:
+    """T = most recent period, T-1 = one period before that, etc."""
+    return "T" if offset == 0 else f"T-{offset}"
+
+
+def _write_metric_comparison_tab(wb, ticker_results, sheet_name, value_column, value_label):
+    """One row per ticker; columns are Revenue then value_column, each repeated
+    once per trailing period (oldest to newest, ending at the most recent "T").
+
+    Companies don't all share the same fiscal calendar or the same amount of
+    history, so periods are aligned by recency (each company's own most
+    recent reported period lines up in the "T" column), not by calendar
+    quarter -- a "T-3" column can be a different calendar quarter for two
+    different tickers, especially for a recent IPO with a short history.
+    """
     ws = wb.create_sheet(sheet_name)
-    headers = [
-        "Ticker",
-        "Company",
-        "Period",
-        "Form",
-        "Period End",
-        "Filed",
-        "Revenue",
-        value_label,
-        margin_label,
-    ]
+
+    ok_results = {
+        ticker: result
+        for ticker, result in ticker_results.items()
+        if result.get("status") == "ok" and result.get("rows")
+    }
+    max_periods = max((len(result["rows"]) for result in ok_results.values()), default=0)
+
+    revenue_start_col = 3
+    value_start_col = revenue_start_col + max_periods
+    headers = ["Ticker", "Company"]
+    for offset in range(max_periods - 1, -1, -1):
+        headers.append(f"Revenue ({_period_offset_label(offset)})")
+    for offset in range(max_periods - 1, -1, -1):
+        headers.append(f"{value_label} ({_period_offset_label(offset)})")
+
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col, value=header)
         cell.font = HEADER_FONT
-    ws.freeze_panes = "A2"
+    ws.freeze_panes = "C2"
 
     r = 2
-    for ticker, result in ticker_results.items():
-        if result.get("status") != "ok":
-            continue
-        company_name = result.get("company_name", "")
-        for row in result.get("rows", []):
-            revenue = row.get("Revenue")
-            value = row.get(value_column)
-            ws.cell(row=r, column=1, value=ticker)
-            ws.cell(row=r, column=2, value=company_name)
-            ws.cell(row=r, column=3, value=row.get("label"))
-            ws.cell(row=r, column=4, value=row.get("form"))
-            ws.cell(row=r, column=5, value=row.get("end"))
-            ws.cell(row=r, column=6, value=row.get("filed"))
-            rev_cell = ws.cell(row=r, column=7, value=revenue)
-            if revenue is not None:
-                rev_cell.number_format = NUMBER_FORMAT
-            val_cell = ws.cell(row=r, column=8, value=value)
-            if value is not None:
-                val_cell.number_format = NUMBER_FORMAT
-            if revenue and value is not None:
-                margin_cell = ws.cell(row=r, column=9, value=value / revenue)
-                margin_cell.number_format = PERCENT_FORMAT
-            r += 1
+    for ticker, result in ok_results.items():
+        rows = result["rows"]  # sorted oldest -> newest
+        pad = max_periods - len(rows)
+        ws.cell(row=r, column=1, value=ticker)
+        ws.cell(row=r, column=2, value=result.get("company_name", ""))
+        for i, row in enumerate(rows):
+            revenue_cell = ws.cell(row=r, column=revenue_start_col + pad + i, value=row.get("Revenue"))
+            if row.get("Revenue") is not None:
+                revenue_cell.number_format = NUMBER_FORMAT
+            value_cell = ws.cell(row=r, column=value_start_col + pad + i, value=row.get(value_column))
+            if row.get(value_column) is not None:
+                value_cell.number_format = NUMBER_FORMAT
+        r += 1
 
     _autosize(ws, len(headers), header_row=1)
 
@@ -205,10 +215,8 @@ def write_workbook(output_path, ticker_results: dict):
     summary_ws = wb.create_sheet("Summary")
     _write_headers(summary_ws, summary_meta, summary_first_metric_col)
 
-    for sheet_name, value_column, value_label, margin_label in METRIC_COMPARISON_TABS:
-        _write_metric_comparison_tab(
-            wb, ticker_results, sheet_name, value_column, value_label, margin_label
-        )
+    for sheet_name, value_column, value_label in METRIC_COMPARISON_TABS:
+        _write_metric_comparison_tab(wb, ticker_results, sheet_name, value_column, value_label)
 
     summary_row_idx = 3
     for ticker, result in ticker_results.items():
