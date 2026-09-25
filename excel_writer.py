@@ -150,19 +150,24 @@ METRIC_COMPARISON_TABS = [
 ]
 
 
+def _relative_period_label(offset: int) -> str:
+    """offset 0 = each ticker's own most recent reported period, 1 = one before that, etc."""
+    return "Most Recent Qtr" if offset == 0 else f"{offset} Qtr(s) Before"
+
+
 def _write_metric_comparison_tab(wb, ticker_results, sheet_name, value_column, value_label):
     """One row per ticker; columns are Revenue then value_column, each repeated
     once per trailing period (oldest to newest, ending at the most recent).
 
-    Companies don't all share the same fiscal calendar or the same amount of
-    history, so periods are aligned by recency (each company's own most
-    recent reported period lines up in the rightmost column), not strictly by
-    calendar quarter. Column headers show the actual period label (e.g. "Q2
-    FY2026") taken from whichever ticker has the longest history -- for a
-    company on a different fiscal calendar, or a recent IPO with less
-    history, its own period in that column may not exactly match the header
-    label even though the data is still correctly right-aligned to its own
-    most recent period.
+    Several of these companies run non-calendar fiscal years (e.g. Zscaler's
+    fiscal year ends in July, MongoDB's in January), so "the same column"
+    across two tickers is NOT the same real-world calendar quarter -- there
+    is no single shared header that could show one real date for every
+    ticker without misrepresenting most of them. Columns are therefore
+    labeled by position relative to each company's own most recent reported
+    period ("Most Recent Qtr", "1 Qtr(s) Before", ...), not by a specific
+    calendar date. For a given ticker's actual period end dates, see that
+    ticker's own tab (Period Start / Period End columns).
     """
     ws = wb.create_sheet(sheet_name)
 
@@ -172,11 +177,7 @@ def _write_metric_comparison_tab(wb, ticker_results, sheet_name, value_column, v
         if result.get("status") == "ok" and result.get("rows")
     }
     max_periods = max((len(result["rows"]) for result in ok_results.values()), default=0)
-    reference_rows = next(
-        (result["rows"] for result in ok_results.values() if len(result["rows"]) == max_periods),
-        [],
-    )
-    period_labels = [row.get("label") or "" for row in reference_rows]
+    period_labels = [_relative_period_label(offset) for offset in range(max_periods - 1, -1, -1)]
 
     revenue_start_col = 3
     value_start_col = revenue_start_col + max_periods
