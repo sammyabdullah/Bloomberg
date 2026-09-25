@@ -264,6 +264,12 @@ PERCENT_COLUMNS = {"RevenueYoYGrowth"}
 # own, just an artifact of that snapshot's end date matching a real quarter.
 DURATION_CONCEPT_KEYS = [col for col in CONCEPT_MAP if METRIC_STATEMENT.get(col) != STMT_BALANCE]
 
+# A row with fewer than this many populated income-statement/cash-flow
+# fields is a candidate to be dropped as a stray if it's too close in time
+# to a much richer row (see the stray-row filter in extract_ticker_financials).
+RICH_ROW_MIN_DURATION_FIELDS = 3
+NEARBY_STRAY_DAYS_THRESHOLD = 60
+
 METRIC_COLUMNS = []
 for _col in CONCEPT_MAP.keys():
     METRIC_COLUMNS.append(_col)
@@ -437,6 +443,41 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
     rows = [row for row in rows if any(row.get(col) is not None for col in DURATION_CONCEPT_KEYS)]
 
     rows.sort(key=lambda r: (r["end"] or "", r["start"] or ""))
+
+    # Drop sparse rows that sit suspiciously close in time to a much richer
+    # row -- real fiscal quarters are ~90 days apart, so an end date that
+    # lands within ~60 days of another, far more complete row's end date is
+    # very unlikely to be its own standalone reporting period; more likely
+    # it's some incidental duration fact (e.g. a one-off disclosure tied to
+    # a specific transaction or award-modification date) that happened to
+    # get tagged with metadata resembling a fiscal period.
+    def _duration_field_count(row):
+        return sum(1 for col in DURATION_CONCEPT_KEYS if row.get(col) is not None)
+
+    end_dates = []
+    for row in rows:
+        try:
+            end_dates.append(date.fromisoformat(row["end"]) if row.get("end") else None)
+        except ValueError:
+            end_dates.append(None)
+
+    kept_rows = []
+    for i, row in enumerate(rows):
+        count = _duration_field_count(row)
+        is_stray = False
+        if count < RICH_ROW_MIN_DURATION_FIELDS and end_dates[i] is not None:
+            for j, other in enumerate(rows):
+                if i == j or end_dates[j] is None:
+                    continue
+                if (
+                    abs((end_dates[j] - end_dates[i]).days) <= NEARBY_STRAY_DAYS_THRESHOLD
+                    and _duration_field_count(other) > count
+                ):
+                    is_stray = True
+                    break
+        if not is_stray:
+            kept_rows.append(row)
+    rows = kept_rows
 
     # Look up "same period, roughly one year earlier" by end date (within a
     # small tolerance), using the full history (before --quarters truncation
