@@ -1,7 +1,7 @@
 """Extraction of standardized financial line items from SEC XBRL company facts."""
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -298,21 +298,30 @@ def _duration_days(rec: dict) -> Optional[int]:
 
 
 def _extract_concept_periods(facts: dict, candidates: list) -> dict:
-    """Return {(end, fy, fp): raw_fact_record} for the first matching tag per period.
+    """Return {(end, form): raw_fact_record} for the first matching tag per period.
 
-    Facts are keyed by (end, fy, fp) rather than including "start" so that
-    balance-sheet "instant" facts (no start date) line up on the same row as
+    Facts are keyed by (end, form) -- the fact's own end date and which
+    filing type reported it -- rather than SEC's computed "fy"/"fp" fields.
+    Those fields are meant to identify the fiscal period, but SEC can assign
+    them inconsistently *across different concepts for the exact same real
+    calendar quarter* (e.g. a quarter's original filing vs. its later
+    appearance as a prior-year comparative in a subsequent filing can get
+    different nominal fy values for different line items) -- keying on that
+    would fragment one true period into several sparse rows. The end date
+    and form are directly reported per fact and don't have this problem.
+    Keying by (end, form) rather than just (end,) also lets a balance-sheet
+    "instant" fact (no start date) line up on the same row as
     income-statement/cash-flow "duration" facts (start+end) for the same
-    fiscal period -- both share the same end date, fy, and fp.
+    filing, since both share the same end date and form.
 
-    A single tag can carry more than one duration fact for the same (end, fy,
-    fp): e.g. a Q2 filing commonly tags both the standalone 3-month figure
-    and the 6-month year-to-date cumulative figure under the same concept.
-    For quarterly periods (fp in Q1-Q4) we keep the shortest duration (the
-    standalone quarter, not the YTD cumulative); for FY periods we keep the
-    longest (the full year, not some shorter footnote breakout). Remaining
-    ties (equal duration -- e.g. a genuine restatement) fall back to keeping
-    the earliest-filed value.
+    A single tag can carry more than one duration fact for the same (end,
+    form): e.g. a 10-Q commonly tags both the standalone 3-month figure and
+    the 6-month year-to-date cumulative figure under the same concept. For
+    10-Q periods we keep the shortest duration (the standalone quarter, not
+    the YTD cumulative); for 10-K periods we keep the longest (the full
+    year, not some shorter footnote breakout). Remaining ties (equal
+    duration -- e.g. a genuine restatement) fall back to the earliest-filed
+    value.
     """
     us_gaap = (facts or {}).get("facts", {}).get("us-gaap", {})
     periods = {}
@@ -323,13 +332,13 @@ def _extract_concept_periods(facts: dict, candidates: list) -> dict:
         units = node.get("units", {})
         for unit_name, entries in units.items():
             for e in entries:
-                if e.get("form") not in VALID_FORMS:
+                form = e.get("form")
+                if form not in VALID_FORMS:
                     continue
                 end = e.get("end")
                 if not end:
                     continue
-                fy, fp = e.get("fy"), e.get("fp")
-                key = (end, fy, fp)
+                key = (end, form)
                 existing = periods.get(key)
                 if existing is None:
                     periods[key] = {**e, "tag": tag, "unit": unit_name}
@@ -342,7 +351,7 @@ def _extract_concept_periods(facts: dict, candidates: list) -> dict:
                 new_days = _duration_days(e)
                 prefer_new = False
                 if new_days is not None and new_days != existing_days:
-                    if fp == "FY":
+                    if form == "10-K":
                         prefer_new = existing_days is None or new_days > existing_days
                     else:
                         prefer_new = existing_days is None or new_days < existing_days
@@ -377,19 +386,25 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
 
     rows = []
     for key in all_keys:
-        end, fy, fp = key
-        sample = None
-        for periods in per_concept.values():
-            if key in periods:
-                sample = periods[key]
-                break
+        end, form = key
+        # Use whichever concept's fact for this period was filed earliest as
+        # the canonical source for display metadata (fy/fp/label) -- that's
+        # normally the period's original filing rather than a later
+        # restatement or comparative appearance, so it gives the most
+        # sensible label even though fy/fp are no longer used for grouping.
+        candidates_for_key = [periods[key] for periods in per_concept.values() if key in periods]
+        sample = (
+            min(candidates_for_key, key=lambda rec: rec.get("filed") or "9999-99-99")
+            if candidates_for_key
+            else None
+        )
 
         row = {
             "start": sample.get("start") if sample else None,
             "end": end,
-            "fy": fy,
-            "fp": fp,
-            "form": sample.get("form") if sample else None,
+            "fy": sample.get("fy") if sample else None,
+            "fp": sample.get("fp") if sample else None,
+            "form": form,
             "filed": sample.get("filed") if sample else None,
             "label": _period_label(sample) if sample else (end or ""),
         }
@@ -398,19 +413,41 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
             row[column] = rec.get("val") if rec else None
         rows.append(row)
 
+    # Drop rows with no data at all in any tracked concept -- these are
+    # occasional artifacts of a fact appearing under a given (end, form)
+    # only as an incidental comparative (e.g. a balance sheet snapshot
+    # reappearing in a later filing's comparative column) with nothing else
+    # attached to that same key.
+    rows = [row for row in rows if any(row.get(col) is not None for col in CONCEPT_MAP)]
+
     rows.sort(key=lambda r: (r["end"] or "", r["start"] or ""))
 
-    # Look up "same fiscal period, one fiscal year earlier" using the full
-    # history (before --quarters truncation below), so a row near the edge
-    # of a truncated window can still find its prior-year comparison.
-    by_fiscal_period = {
-        (r["fy"], r["fp"]): r for r in rows if r["fy"] is not None and r["fp"] is not None
-    }
+    # Look up "same period, roughly one year earlier" by end date (within a
+    # small tolerance), using the full history (before --quarters truncation
+    # below) so a row near the edge of a truncated window can still find its
+    # prior-year comparison. Matching by real elapsed time is more robust
+    # than SEC's fy/fp fields, which are no longer used for row identity.
+    rows_by_end = {}
     for row in rows:
-        fy, fp = row["fy"], row["fp"]
+        rows_by_end.setdefault(row["end"], row)
+    for row in rows:
         prior_row = None
-        if isinstance(fy, int) and fp is not None:
-            prior_row = by_fiscal_period.get((fy - 1, fp))
+        end = row.get("end")
+        try:
+            end_date = date.fromisoformat(end) if end else None
+        except ValueError:
+            end_date = None
+        if end_date is not None:
+            target = end_date - timedelta(days=365)
+            best_diff = None
+            for other_end, other_row in rows_by_end.items():
+                try:
+                    other_date = date.fromisoformat(other_end)
+                except (ValueError, TypeError):
+                    continue
+                diff = abs((other_date - target).days)
+                if diff <= 10 and (best_diff is None or diff < best_diff):
+                    prior_row, best_diff = other_row, diff
         prior_revenue = prior_row.get("Revenue") if prior_row else None
         row["RevenuePriorYear"] = prior_revenue
         revenue = row.get("Revenue")
