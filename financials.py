@@ -297,31 +297,42 @@ def _duration_days(rec: dict) -> Optional[int]:
         return None
 
 
+# A candidate duration this long or more is treated as "this end date is a
+# fiscal year-end" for the purposes of picking between same-tag duplicates.
+ANNUAL_DURATION_THRESHOLD_DAYS = 300
+
+
 def _extract_concept_periods(facts: dict, candidates: list) -> dict:
-    """Return {(end, form): raw_fact_record} for the first matching tag per period.
+    """Return {end_date: raw_fact_record} for the first matching tag per period.
 
-    Facts are keyed by (end, form) -- the fact's own end date and which
-    filing type reported it -- rather than SEC's computed "fy"/"fp" fields.
-    Those fields are meant to identify the fiscal period, but SEC can assign
-    them inconsistently *across different concepts for the exact same real
-    calendar quarter* (e.g. a quarter's original filing vs. its later
-    appearance as a prior-year comparative in a subsequent filing can get
-    different nominal fy values for different line items) -- keying on that
-    would fragment one true period into several sparse rows. The end date
-    and form are directly reported per fact and don't have this problem.
-    Keying by (end, form) rather than just (end,) also lets a balance-sheet
-    "instant" fact (no start date) line up on the same row as
-    income-statement/cash-flow "duration" facts (start+end) for the same
-    filing, since both share the same end date and form.
+    Facts are keyed by end date ALONE. Neither SEC's computed "fy"/"fp"
+    fields nor the reporting "form" are reliable enough to key on: both can
+    differ *across different concepts, or across different appearances of
+    the exact same real period*. fy/fp can be assigned inconsistently for
+    different line items describing the same real quarter (its original
+    filing vs. a later prior-year-comparative appearance). form has the same
+    problem in a different guise: e.g. a fiscal year-end balance sheet value
+    is reported with form="10-K" in the original annual filing, but the same
+    real date's balance sheet also reappears as the prior-year-end
+    comparative column inside the *next* 10-Q, carrying form="10-Q" even
+    though it describes the same date. Keying on either field fragments one
+    true period into multiple sparse rows. The end date itself is the one
+    thing that's consistent across every appearance of the same real period,
+    and it also naturally lines up a balance-sheet "instant" fact (no start
+    date) with income-statement/cash-flow "duration" facts (start+end)
+    ending on that same date.
 
-    A single tag can carry more than one duration fact for the same (end,
-    form): e.g. a 10-Q commonly tags both the standalone 3-month figure and
-    the 6-month year-to-date cumulative figure under the same concept. For
-    10-Q periods we keep the shortest duration (the standalone quarter, not
-    the YTD cumulative); for 10-K periods we keep the longest (the full
-    year, not some shorter footnote breakout). Remaining ties (equal
-    duration -- e.g. a genuine restatement) fall back to the earliest-filed
-    value.
+    A single tag can carry more than one duration fact for the same end
+    date: e.g. a 10-Q commonly tags both the standalone 3-month figure and
+    the 6-month year-to-date cumulative figure under the same concept. When
+    that happens, we keep the shorter duration UNLESS one of the candidates
+    looks like a full fiscal year (>= ANNUAL_DURATION_THRESHOLD_DAYS), in
+    which case we keep the longer one -- since that means this end date is a
+    fiscal year-end and the long duration is the real annual figure, not a
+    footnote breakout. Instant facts (no duration at all) and remaining
+    ties (equal duration -- e.g. a genuine restatement) fall back to keeping
+    the earliest-filed value, which correctly prefers an original filing's
+    balance-sheet snapshot over a later comparative reappearance of it.
     """
     us_gaap = (facts or {}).get("facts", {}).get("us-gaap", {})
     periods = {}
@@ -332,16 +343,14 @@ def _extract_concept_periods(facts: dict, candidates: list) -> dict:
         units = node.get("units", {})
         for unit_name, entries in units.items():
             for e in entries:
-                form = e.get("form")
-                if form not in VALID_FORMS:
+                if e.get("form") not in VALID_FORMS:
                     continue
                 end = e.get("end")
                 if not end:
                     continue
-                key = (end, form)
-                existing = periods.get(key)
+                existing = periods.get(end)
                 if existing is None:
-                    periods[key] = {**e, "tag": tag, "unit": unit_name}
+                    periods[end] = {**e, "tag": tag, "unit": unit_name}
                     continue
                 if existing.get("tag") != tag:
                     # A higher-priority tag already filled this period; keep it.
@@ -351,7 +360,7 @@ def _extract_concept_periods(facts: dict, candidates: list) -> dict:
                 new_days = _duration_days(e)
                 prefer_new = False
                 if new_days is not None and new_days != existing_days:
-                    if form == "10-K":
+                    if max(new_days, existing_days or 0) >= ANNUAL_DURATION_THRESHOLD_DAYS:
                         prefer_new = existing_days is None or new_days > existing_days
                     else:
                         prefer_new = existing_days is None or new_days < existing_days
@@ -359,7 +368,7 @@ def _extract_concept_periods(facts: dict, candidates: list) -> dict:
                     prefer_new = True
 
                 if prefer_new:
-                    periods[key] = {**e, "tag": tag, "unit": unit_name}
+                    periods[end] = {**e, "tag": tag, "unit": unit_name}
     return periods
 
 
@@ -385,14 +394,14 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
         return []
 
     rows = []
-    for key in all_keys:
-        end, form = key
+    for end in all_keys:
         # Use whichever concept's fact for this period was filed earliest as
-        # the canonical source for display metadata (fy/fp/label) -- that's
-        # normally the period's original filing rather than a later
+        # the canonical source for display metadata (form/fy/fp/label) --
+        # that's normally the period's original filing rather than a later
         # restatement or comparative appearance, so it gives the most
-        # sensible label even though fy/fp are no longer used for grouping.
-        candidates_for_key = [periods[key] for periods in per_concept.values() if key in periods]
+        # sensible label even though fy/fp/form are no longer used for
+        # grouping.
+        candidates_for_key = [periods[end] for periods in per_concept.values() if end in periods]
         sample = (
             min(candidates_for_key, key=lambda rec: rec.get("filed") or "9999-99-99")
             if candidates_for_key
@@ -404,20 +413,16 @@ def extract_ticker_financials(facts: dict, quarters: Optional[int] = None) -> li
             "end": end,
             "fy": sample.get("fy") if sample else None,
             "fp": sample.get("fp") if sample else None,
-            "form": form,
+            "form": sample.get("form") if sample else None,
             "filed": sample.get("filed") if sample else None,
             "label": _period_label(sample) if sample else (end or ""),
         }
         for column, periods in per_concept.items():
-            rec = periods.get(key)
+            rec = periods.get(end)
             row[column] = rec.get("val") if rec else None
         rows.append(row)
 
-    # Drop rows with no data at all in any tracked concept -- these are
-    # occasional artifacts of a fact appearing under a given (end, form)
-    # only as an incidental comparative (e.g. a balance sheet snapshot
-    # reappearing in a later filing's comparative column) with nothing else
-    # attached to that same key.
+    # Drop rows with no data at all in any tracked concept.
     rows = [row for row in rows if any(row.get(col) is not None for col in CONCEPT_MAP)]
 
     rows.sort(key=lambda r: (r["end"] or "", r["start"] or ""))
